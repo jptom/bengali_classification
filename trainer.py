@@ -10,6 +10,7 @@ import torch.autograd.profiler as profiler
 from torch.utils.data import Dataset, DataLoader
 from torchvision.datasets import ImageFolder
 from torchvision.transforms import transforms
+from PIL import Image
 
 class BengaliDataset(Dataset):
   def __init__(self, label_csv, train_folder, transforms, cache=True):
@@ -36,18 +37,18 @@ class BengaliDataset(Dataset):
     img = self.img[idx]
     if img is None:
       name = self.label.loc[idx]['image_id']
-      img = cv2.imread(os.path.join(self.train_folder, name+'.jpg'), cv2.IMREAD_GRAYSCALE)
-      
-      return img
+      #img = cv2.imread(os.path.join(self.train_folder, name+'.jpg'), cv2.IMREAD_GRAYSCALE)
+      img = Image.open(os.path.join(self.train_folder, name+'.jpg'))
+      return self.transforms(img)
     else:
-      return img
+      return self.transforms(img)
 
   def __getitem__(self, idx):
     img = self.load_image(idx)
     root = self.label.loc[idx]['grapheme_root']
     consonant = self.label.loc[idx]['consonant_diacritic']
     vowel = self.label.loc[idx]['vowel_diacritic']
-    return self.transforms(img).float(), root, consonant, vowel
+    return transforms.ToTensor()(img), root, consonant, vowel
 
   def __len__(self):
     return self.label.shape[0]
@@ -137,9 +138,9 @@ class Trainer:
         transform = []
         val_transform = []
 
-        transform += [transforms.ToPILImage()]
+        #transform += [transforms.ToPILImage()]
         transform += [transforms.Resize(self.input_size)]
-        transform += [transforms.ToTensor()]
+        #transform += [transforms.ToTensor()]
 
         self.transform = transforms.Compose(transform)
         self.val_transform = transforms.Compose(val_transform)
@@ -207,20 +208,32 @@ class Trainer:
                 vowels = data[3].to(self.device).long()
 
                 root_preds = self.model_root(inputs)
-                consonant_preds = self.model_consonant(inputs)
-                vowel_preds = self.model_vowel(inputs)
                 root_loss = self.criterion(root_preds, roots)
-                consonant_loss = self.criterion(consonant_preds, consonants)
-                vowel_loss = self.criterion(vowel_preds, vowels)
-                self.model_root.zero_grad()
-                self.model_consonant.zero_grad()
-                self.model_vowel.zero_grad()
                 root_loss.backward()
-                consonant_loss.backward()
-                vowel_loss.backward()
                 self.optimizer_root.step()
+                self.model_root.zero_grad()
+
+                consonant_preds = self.model_consonant(inputs)
+                consonant_loss = self.criterion(consonant_preds, consonants)
+                consonant_loss.backward()
                 self.optimizer_consonant.step()
+                self.model_consonant.zero_grad()
+
+                vowel_preds = self.model_vowel(inputs)
+                
+                
+                vowel_loss = self.criterion(vowel_preds, vowels)
+
+                vowel_loss.backward()
+                
+                
                 self.optimizer_vowel.step()
+                
+                
+                self.model_vowel.zero_grad()
+                
+                
+                
 
                 root_loss_mean += root_loss.item()
                 consonant_loss_mean += consonant_loss.item() 
