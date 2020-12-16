@@ -8,7 +8,6 @@ import torch.autograd.profiler as profiler
 from torch.utils.data import Dataset, DataLoader
 from torchvision.datasets import ImageFolder
 from torchvision.transforms import transforms
-from style_augmentation.styleaug import StyleAugmentor
 
 class MultiScaleFiveCrop(object):
     def __init__(self, sizes=(680, 600, 528)):

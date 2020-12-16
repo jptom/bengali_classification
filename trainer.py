@@ -3,25 +3,28 @@ import numpy as np
 import tqdm
 import csv
 import os
+import cv2
 import pandas as pd
 from timm.models import create_model
 import torch.autograd.profiler as profiler
 from torch.utils.data import Dataset, DataLoader
 from torchvision.datasets import ImageFolder
 from torchvision.transforms import transforms
-from style_augmentation.styleaug import StyleAugmentor
 
 class BengaliDataset(Dataset):
   def __init__(self, label_csv, train_folder, transforms, cache=True):
     self.label_csv = label_csv
     self.train_folder = train_folder
-    label = pd.read_csv(self.train_folder)
-    self.label = train_df_.drop(['grapheme'], axis=1, inplace=False)
+    self.label = pd.read_csv(self.label_csv)
+    #self.label = label.drop(['grapheme'], axis=1, inplace=False)
     self.label[['grapheme_root', 'vowel_diacritic', 'consonant_diacritic']] = self.label[['grapheme_root', 'vowel_diacritic', 'consonant_diacritic']].astype('uint8')
-    mod = pd.read_csv('./bengaliai-cv19/train_multi_diacritics.csv')
+    #mod = pd.read_csv('./bengaliai-cv19/train_multi_diacritics.csv')
 
-    self.transforms = transforms.Compose(transforms)
+    self.transforms = transforms
     self.img = [None] * self.label.shape[0]
+
+    if cache:
+      self.cache_images()
 
   def cache_images(self):
     pbar = tqdm.tqdm(range(self.label.shape[0]))
@@ -32,7 +35,7 @@ class BengaliDataset(Dataset):
   def load_image(self, idx):
     img = self.img[idx]
     if img is None:
-      name = self.label.loc(idx)['image_id']
+      name = self.label.loc[idx]['image_id']
       img = cv2.imread(os.path.join(self.train_folder, name+'.jpg'), cv2.IMREAD_GRAYSCALE)
       
       return img
@@ -41,10 +44,10 @@ class BengaliDataset(Dataset):
 
   def __getitem__(self, idx):
     img = self.load_image(idx)
-    root = self.label.loc(idx)['grapheme_root']
-    consonant = self.label.loc(idx)['consonant_diacritic']
-    vowel = self.label.loc(idx)['vowel_diacritic']
-    return self.transforms(img), root, consonant, vowel
+    root = self.label.loc[idx]['grapheme_root']
+    consonant = self.label.loc[idx]['consonant_diacritic']
+    vowel = self.label.loc[idx]['vowel_diacritic']
+    return self.transforms(img).float(), root, consonant, vowel
 
   def __len__(self):
     return self.label.shape[0]
@@ -97,7 +100,7 @@ class Trainer:
                val_crop='five', batch_size=128, model_name='tf_efficientnet_b3_ns', 
                lr=0.001, lr_min=0.0001, weight_decay=1e-4, momentum=0.9, log_step=25, save_step=10,
                log_path='./drive/My Drive/cars_log.txt', cutout=False, style_aug=False,
-               resume=False, resume_path='./drive/My Drive/ckpt/'):
+               resume=False, resume_path='./drive/My Drive/ckpt/', train_csv='./train_labels.csv', val_csv='./val_labels.csv'):
 
         # initialize attributes
         self.epoch = epoch
@@ -117,6 +120,8 @@ class Trainer:
         self.style_aug = style_aug
         self.resume = resume
         self.resume_path = resume_path
+        self.train_csv = train_csv
+        self.val_csv = val_csv
         if model_name == 'tf_efficientnet_b0_ns':
             self.input_size = (224, 224)
         elif model_name == 'tf_efficientnet_b3_ns':
@@ -132,14 +137,14 @@ class Trainer:
         transform = []
         val_transform = []
 
-
+        transform += [transforms.ToPILImage()]
         transform += [transforms.Resize(self.input_size)]
         transform += [transforms.ToTensor()]
 
         self.transform = transforms.Compose(transform)
         self.val_transform = transforms.Compose(val_transform)
 
-        self.dataset = BengaliDataset(self.train_csv, self.dataset_path, self.transforms, cache=True)
+        self.dataset = BengaliDataset(self.train_csv, self.dataset_path, self.transform, cache=True)
         self.val_dataset = BengaliDataset(self.val_csv, self.dataset_path, self.transform, cache=True)
         self.dataloader = DataLoader(self.dataset, batch_size=self.batch_size, num_workers=0, shuffle=True)
         self.val_dataloader = DataLoader(self.val_dataset, batch_size=self.batch_size, num_workers=1, shuffle=True)
@@ -174,10 +179,18 @@ class Trainer:
         for epoch in range(self.start_epoch, self.epoch):
             pbar = tqdm.tqdm(self.dataloader)
             pbar.set_description('training process')
-            epoch_loss_mean = 0 
-            epoch_acc_mean = 0
-            loss_mean = 0
-            acc_mean = 0
+            root_epoch_loss_mean = 0 
+            consonant_epoch_loss_mean = 0 
+            vowel_epoch_loss_mean = 0 
+            root_epoch_acc_mean = 0
+            consonant_epoch_acc_mean = 0
+            vowel_epoch_acc_mean = 0
+            root_loss_mean = 0
+            consonant_loss_mean = 0
+            vowel_loss_mean = 0
+            root_acc_mean = 0
+            consonant_acc_mean = 0
+            vowel_acc_mean = 0
             self.model_root.train()
             self.model_consonant.train()
             self.model_vowel.train()
@@ -188,9 +201,10 @@ class Trainer:
             for it, data in enumerate(pbar):
 
                 inputs = data[0].to(self.device)
-                roots = data[1].to(self.device)
-                consonants = data[2].to(self.device)
-                vowels = data[3].to(self.device)
+                inputs = inputs.repeat(1, 3, 1, 1)
+                roots = data[1].to(self.device).long()
+                consonants = data[2].to(self.device).long()
+                vowels = data[3].to(self.device).long()
 
                 root_preds = self.model_root(inputs)
                 consonant_preds = self.model_consonant(inputs)
@@ -265,9 +279,10 @@ class Trainer:
             with torch.no_grad():
                 for it, data in enumerate(pbar):
                     inputs = data[0].to(self.device)
-                    roots = data[1].to(self.device)
-                    consonants = data[2].to(self.device)
-                    vowels = data[3].to(self.device)
+                    inputs = inputs.repeat(1, 3, 1, 1)
+                    roots = data[1].to(self.device).long()
+                    consonants = data[2].to(self.device).long()
+                    vowels = data[3].to(self.device).long()
 
                     root_preds = self.model_root(inputs)
                     consonant_preds = self.model_consonant(inputs)
@@ -335,5 +350,5 @@ class Trainer:
                 }, './drive/My Drive/ckpt/%d.pth'%(epoch+1))
         
 
-def criterion(self, preds, trues):
-    return torch.nn.CrossEntropyLoss()(preds, trues)
+    def criterion(self, preds, trues):
+        return torch.nn.CrossEntropyLoss()(preds, trues)
