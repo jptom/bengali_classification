@@ -288,7 +288,9 @@ class Trainer:
             root_val_acc_mean = 0
             consonant_val_acc_mean = 0
             vowel_val_acc_mean = 0
-            self.model.eval()
+            self.model_root.eval()
+            self.model_consonant.eval()
+            self.model_vowel.eval()
             with torch.no_grad():
                 for it, data in enumerate(pbar):
                     inputs = data[0].to(self.device)
@@ -302,7 +304,7 @@ class Trainer:
                     vowel_preds = self.model_vowel(inputs)
 
                     root_loss = self.criterion(root_preds, roots)
-                    consonant_loss = self.criterion(consonant_preds, cosonants)
+                    consonant_loss = self.criterion(consonant_preds, consonants)
                     vowel_loss = self.criterion(vowel_preds, vowels)
                     root_val_loss_mean += root_loss.item()
                     consonant_val_loss_mean += consonant_loss.item()
