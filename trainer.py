@@ -362,7 +362,7 @@ class Trainer:
                     'optimizer_consonant_state_dict': self.optimizer_consonant.state_dict(),
                     'optimizer_vowel_state_dict': self.optimizer_vowel.state_dict(),
                     'epoch': epoch + 1
-                }, './drive/My Drive/ckpt/%d.pth'%(epoch+1))
+                }, './drive/MyDrive/ckpt/grapheme/%d.pth'%(epoch+1))
         
 
     def criterion(self, preds, trues):
