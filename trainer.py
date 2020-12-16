@@ -3,12 +3,51 @@ import numpy as np
 import tqdm
 import csv
 import os
+import pandas as pd
 from timm.models import create_model
 import torch.autograd.profiler as profiler
 from torch.utils.data import Dataset, DataLoader
 from torchvision.datasets import ImageFolder
 from torchvision.transforms import transforms
 from style_augmentation.styleaug import StyleAugmentor
+
+class BengaliDataset(Dataset):
+  def __init__(self, label_csv, train_folder, transforms, cache=True):
+    self.label_csv = label_csv
+    self.train_folder = train_folder
+    label = pd.read_csv(self.train_folder)
+    self.label = train_df_.drop(['grapheme'], axis=1, inplace=False)
+    self.label[['grapheme_root', 'vowel_diacritic', 'consonant_diacritic']] = self.label[['grapheme_root', 'vowel_diacritic', 'consonant_diacritic']].astype('uint8')
+    mod = pd.read_csv('./bengaliai-cv19/train_multi_diacritics.csv')
+
+    self.transforms = transforms.Compose(transforms)
+    self.img = [None] * self.label.shape[0]
+
+  def cache_images(self):
+    pbar = tqdm.tqdm(range(self.label.shape[0]))
+    pbar.set_description('caching images...')
+    for i in pbar:
+      self.img[i] = self.load_image(i)
+
+  def load_image(self, idx):
+    img = self.img[idx]
+    if img is None:
+      name = self.label.loc(idx)['image_id']
+      img = cv2.imread(os.path.join(self.train_folder, name+'.jpg'), cv2.IMREAD_GRAYSCALE)
+      
+      return img
+    else:
+      return img
+
+  def __getitem__(self, idx):
+    img = self.load_image(idx)
+    root = self.label.loc(idx)['grapheme_root']
+    consonant = self.label.loc(idx)['consonant_diacritic']
+    vowel = self.label.loc(idx)['vowel_diacritic']
+    return self.transforms(img), root, consonant, vowel
+
+  def __len__(self):
+    return self.label.shape[0]
 
 # Borrow from Improved Regularization of Convolutional Neural Networks with Cutout (https://github.com/uoguelph-mlrg/Cutout)
 class Cutout(object):
@@ -53,11 +92,11 @@ class Cutout(object):
 
 class Trainer:
     def __init__(self, epoch, 
-               dataset_path='./drive/My Drive/datasets/car classification/train_data', 
-               val_path='./drive/My Drive/datasets/car classification/val_data', 
+               dataset_path='./drive/MyDrive/datasets/car classification/train_data', 
+               val_path='./drive/MyDrive/datasets/car classification/val_data', 
                val_crop='five', batch_size=128, model_name='tf_efficientnet_b3_ns', 
                lr=0.001, lr_min=0.0001, weight_decay=1e-4, momentum=0.9, log_step=25, save_step=10,
-               log_path='./drive/My Drive/cars_log.txt', cutout=True, style_aug=False,
+               log_path='./drive/My Drive/cars_log.txt', cutout=False, style_aug=False,
                resume=False, resume_path='./drive/My Drive/ckpt/'):
 
         # initialize attributes
@@ -93,47 +132,42 @@ class Trainer:
         transform = []
         val_transform = []
 
-        transform += [transforms.RandomResizedCrop(self.input_size, scale=(0.125, 1.0))]
 
-        if not self.style_aug:
-            transform.append(transforms.ColorJitter(0.3, 0.3, 0.3, 0.3))
-
-        transform += [transforms.RandomHorizontalFlip(), transforms.ToTensor()]
-
-        if self.style_aug:
-            transform.append(StyleAugmentor())
-            transform.append([])
-
-        transform += [Cutout(n_holes=1, length=int(self.input_size[0]/3)), transforms.Normalize([0.485, 0.456, 0.406],
-                                                                                     [0.229, 0.224, 0.225])]
-        if self.val_crop == 'center':
-            val_transform += [transforms.Resize(int(self.input_size[0]*(1.14))), transforms.CenterCrop(self.input_size), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406],
-                                                                                     [0.229, 0.224, 0.225])]
-        else:
-            val_transform += [transforms.Resize(int(self.input_size[0]*(1.14))), transforms.FiveCrop(self.input_size)]
-            val_transform.append(transforms.Lambda(lambda crops: torch.stack([transforms.ToTensor()(crop) for crop in crops])))
-            val_transform.append(transforms.Lambda(lambda crops: torch.stack([transforms.Normalize([0.485, 0.456, 0.406],
-                                                                                     [0.229, 0.224, 0.225])(crop) for crop in crops])))
+        transform += [transforms.Resize(self.input_size)]
+        transform += [transforms.ToTensor()]
 
         self.transform = transforms.Compose(transform)
         self.val_transform = transforms.Compose(val_transform)
 
-        self.dataset = ImageFolder(self.dataset_path, transform=self.transform)
-        self.val_dataset = ImageFolder(self.val_path, transform=self.val_transform)
+        self.dataset = BengaliDataset(self.train_csv, self.dataset_path, self.transforms, cache=True)
+        self.val_dataset = BengaliDataset(self.val_csv, self.dataset_path, self.transform, cache=True)
         self.dataloader = DataLoader(self.dataset, batch_size=self.batch_size, num_workers=0, shuffle=True)
         self.val_dataloader = DataLoader(self.val_dataset, batch_size=self.batch_size, num_workers=1, shuffle=True)
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.model = create_model(model_name, pretrained=True, num_classes=196).to(self.device)
-        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr, momentum=self.momentum, weight_decay=self.weight_decay, nesterov=True)
+        self.model_root = create_model(model_name, pretrained=True, num_classes=168).to(self.device)
+        self.model_consonant = create_model(model_name, pretrained=True, num_classes=11).to(self.device)
+        self.model_vowel = create_model(model_name, pretrained=True, num_classes=18).to(self.device)
+        self.optimizer_root = torch.optim.SGD(self.model_root.parameters(), lr=self.lr, momentum=self.momentum, weight_decay=self.weight_decay, nesterov=True)
+        self.optimizer_consonant = torch.optim.SGD(self.model_consonant.parameters(), lr=self.lr, momentum=self.momentum, weight_decay=self.weight_decay, nesterov=True)
+        self.optimizer_vowel = torch.optim.SGD(self.model_vowel.parameters(), lr=self.lr, momentum=self.momentum, weight_decay=self.weight_decay, nesterov=True)
+    
         self.start_epoch = 0
 
         if resume:
             ckpt = torch.load(self.resume_path)
-            self.model.load_state_dict(ckpt['model_state_dict'])
-            self.optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+            self.model_root.load_state_dict(ckpt['model_root_state_dict'])
+            self.model_consonant.load_state_dict(ckpt['model_consonant_state_dict'])
+            self.model_vowel.load_state_dict(ckpt['model_vowel_state_dict'])
+            self.optimizer.load_state_dict(ckpt['optimizer_root_state_dict'])
+            self.optimizer.load_state_dict(ckpt['optimizer_consonant_state_dict'])
+            self.optimizer.load_state_dict(ckpt['optimizer_vowel_state_dict'])
             self.start_epoch = ckpt['epoch']
 
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=epoch, last_epoch=self.start_epoch-1,
+        self.scheduler_root = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer_root, T_max=epoch, last_epoch=self.start_epoch-1,
+                  eta_min=lr_min)
+        self.scheduler_consonant = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer_consonant, T_max=epoch, last_epoch=self.start_epoch-1,
+                  eta_min=lr_min)
+        self.scheduler_vowel = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer_vowel, T_max=epoch, last_epoch=self.start_epoch-1,
                   eta_min=lr_min)
 
     def train(self):
@@ -144,80 +178,159 @@ class Trainer:
             epoch_acc_mean = 0
             loss_mean = 0
             acc_mean = 0
-            self.model.train()
-            self.scheduler.step()
+            self.model_root.train()
+            self.model_consonant.train()
+            self.model_vowel.train()
+            self.scheduler_root.step()
+            self.scheduler_consonant.step()
+            self.scheduler_vowel.step()
             batch_number = len(pbar)
             for it, data in enumerate(pbar):
 
                 inputs = data[0].to(self.device)
-                labels = data[1].to(self.device)
+                roots = data[1].to(self.device)
+                consonants = data[2].to(self.device)
+                vowels = data[3].to(self.device)
 
-                preds = self.model(inputs)
-                loss = self.criterion(preds, labels)
-                self.model.zero_grad()
-                loss.backward()
-                self.optimizer.step()
+                root_preds = self.model_root(inputs)
+                consonant_preds = self.model_consonant(inputs)
+                vowel_preds = self.model_vowel(inputs)
+                root_loss = self.criterion(root_preds, roots)
+                consonant_loss = self.criterion(consonant_preds, consonants)
+                vowel_loss = self.criterion(vowel_preds, vowels)
+                self.model_root.zero_grad()
+                self.model_consonant.zero_grad()
+                self.model_vowel.zero_grad()
+                root_loss.backward()
+                consonant_loss.backward()
+                vowel_loss.backward()
+                self.optimizer_root.step()
+                self.optimizer_consonant.step()
+                self.optimizer_vowel.step()
 
-                loss_mean += loss.item()
-                epoch_loss_mean += loss.item()
-                acc = (preds.argmax(-1) == labels).sum().item() / labels.size()[0]
-                acc_mean += acc
-                epoch_acc_mean += acc
+                root_loss_mean += root_loss.item()
+                consonant_loss_mean += consonant_loss.item() 
+                vowel_loss_mean += vowel_loss.item()
+                root_epoch_loss_mean += root_loss.item() 
+                consonant_epoch_loss_mean += consonant_loss.item() 
+                vowel_epoch_loss_mean += vowel_loss.item()
+                root_acc = (root_preds.argmax(-1) == roots).sum().item() / roots.size()[0]
+                consonant_acc = (consonant_preds.argmax(-1) == consonants).sum().item() / consonants.size()[0]
+                vowel_acc = (vowel_preds.argmax(-1) == vowels).sum().item() / vowels.size()[0]
+                root_acc_mean += root_acc 
+                consonant_acc_mean += consonant_acc 
+                vowel_acc_mean += vowel_acc
+                root_epoch_acc_mean += root_acc 
+                consonant_epoch_acc_mean += consonant_acc 
+                vowel_epoch_acc_mean += vowel_acc
 
                 if (it+1) % self.log_step == 0:
-                    loss_mean /= self.log_step
-                    acc_mean /= self.log_step
+                    root_loss_mean /= self.log_step
+                    consonant_loss_mean /= self.log_step
+                    vowel_loss_mean /= self.log_step
+                    root_acc_mean /= self.log_step
+                    consonant_acc_mean /= self.log_step
+                    vowel_acc_mean /= self.log_step
                     with open(self.log_path, 'a+') as f:
                         f.write('epoch: ' + str(epoch) + '\n')
-                        f.write('loss: ' + str(loss_mean) + '\n')
-                        f.write('acc: ' + str(acc_mean) + '\n')
+                        f.write('root loss: ' + str(root_loss_mean) + '\n')
+                        f.write('consonant loss: ' + str(consonant_loss_mean) + '\n')
+                        f.write('vowel loss: ' + str(vowel_loss_mean) + '\n')
+                        f.write('root acc: ' + str(root_acc_mean) + '\n')
+                        f.write('cosonant acc: ' + str(consonant_acc_mean) + '\n')
+                        f.write('vowel acc: ' + str(vowel_acc_mean) + '\n')
                         f.write('\n')
-                    loss_mean = 0
-                    acc_mean = 0
-            epoch_loss_mean /= len(pbar)
-            epoch_acc_mean /= len(pbar)
+                    root_loss_mean = 0
+                    consonant_loss_mean = 0
+                    vowel_loss_mean = 0
+                    root_acc_mean = 0
+                    consonant_acc_mean = 0
+                    vowel_acc_mean = 0
+            root_epoch_loss_mean /= len(pbar)
+            root_epoch_acc_mean /= len(pbar)
+            consonant_epoch_loss_mean /= len(pbar)
+            consonant_epoch_acc_mean /= len(pbar)
+            vowel_epoch_loss_mean /= len(pbar)
+            vowel_epoch_acc_mean /= len(pbar)
             # validate
             pbar = tqdm.tqdm(self.val_dataloader)
             pbar.set_description('validating process')
-            val_loss_mean = 0
-            val_acc_mean = 0
+            root_val_loss_mean = 0
+            consonant_val_loss_mean = 0
+            vowel_val_loss_mean = 0
+            root_val_acc_mean = 0
+            consonant_val_acc_mean = 0
+            vowel_val_acc_mean = 0
             self.model.eval()
             with torch.no_grad():
                 for it, data in enumerate(pbar):
                     inputs = data[0].to(self.device)
-                    labels = data[1].to(self.device)
+                    roots = data[1].to(self.device)
+                    consonants = data[2].to(self.device)
+                    vowels = data[3].to(self.device)
 
-                    if self.val_crop == 'center':
-                        preds = self.model(inputs)
-                    elif self.val_crop == 'five':
-                        bs, ncrops, c, h, w = inputs.size()
-                        preds = self.model(inputs.view(-1, c, h, w))
-                        preds = preds.view(bs, ncrops, -1).mean(1)
+                    root_preds = self.model_root(inputs)
+                    consonant_preds = self.model_consonant(inputs)
+                    vowel_preds = self.model_vowel(inputs)
 
-                    loss = self.criterion(preds, labels)
-                    val_loss_mean += loss.item()
-                    acc = (preds.argmax(-1) == labels).sum().item() / labels.size()[0]
-                    val_acc_mean += acc
+                    root_loss = self.criterion(root_preds, roots)
+                    consonant_loss = self.criterion(consonant_preds, cosonants)
+                    vowel_loss = self.criterion(vowel_preds, vowels)
+                    root_val_loss_mean += root_loss.item()
+                    consonant_val_loss_mean += consonant_loss.item()
+                    vowel_val_loss_mean += vowel_loss.item()
+                    root_acc = (root_preds.argmax(-1) == roots).sum().item() / roots.size()[0]
+                    consonant_acc = (consonant_preds.argmax(-1) == consonants).sum().item() / consonants.size()[0]
+                    vowel_acc = (vowel_preds.argmax(-1) == vowels).sum().item() / vowels.size()[0]
+                    root_val_acc_mean += root_acc
+                    consonant_val_acc_mean += consonant_acc
+                    vowel_val_acc_mean += vowel_acc
                 
-            val_loss_mean /= len(pbar)
-            val_acc_mean /= len(pbar)
+            root_val_loss_mean /= len(pbar)
+            root_val_acc_mean /= len(pbar)
+
+            consonant_val_loss_mean /= len(pbar)
+            consonant_val_acc_mean /= len(pbar)
+
+            vowel_val_loss_mean /= len(pbar)
+            vowel_val_acc_mean /= len(pbar)
 
 
-            print('loss_mean:', epoch_loss_mean, 'acc_mean:', epoch_acc_mean)
-            print('val_loss_mean:', val_loss_mean, 'val_acc_mean:', val_acc_mean)
+            print('root_loss_mean:', root_epoch_loss_mean, 'root_acc_mean:', root_epoch_acc_mean)
+            print('root_val_loss_mean:', root_val_loss_mean, 'root_val_acc_mean:', root_val_acc_mean)
+
+            print('consonant_loss_mean:', consonant_epoch_loss_mean, 'consonant_acc_mean:', consonant_epoch_acc_mean)
+            print('consonant_val_loss_mean:', consonant_val_loss_mean, 'consonant_val_acc_mean:', consonant_val_acc_mean)
+
+            print('vowel_loss_mean:', vowel_epoch_loss_mean, 'vowel_acc_mean:', vowel_epoch_acc_mean)
+            print('vowel_val_loss_mean:', vowel_val_loss_mean, 'vowel_val_acc_mean:', vowel_val_acc_mean)
             
             with open(self.log_path, 'a+') as f:
                 f.write('epoch summary\n')
                 f.write('epoch: ' + str(epoch) + '\n')
-                f.write('loss: ' + str(epoch_loss_mean) + '\n')
-                f.write('acc: ' + str(epoch_acc_mean) + '\n')
-                f.write('val_loss: ' + str(val_loss_mean) + '\n')
-                f.write('val_acc: ' + str(val_acc_mean) + '\n')
+                f.write('root loss: ' + str(root_epoch_loss_mean) + '\n')
+                f.write('root acc: ' + str(root_epoch_acc_mean) + '\n')
+                f.write('root_val_loss: ' + str(root_val_loss_mean) + '\n')
+                f.write('root_val_acc: ' + str(root_val_acc_mean) + '\n')
+
+                f.write('consonant_root loss: ' + str(consonant_epoch_loss_mean) + '\n')
+                f.write('consonant_root acc: ' + str(consonant_epoch_acc_mean) + '\n')
+                f.write('consonant_val_loss: ' + str(consonant_val_loss_mean) + '\n')
+                f.write('consonant_val_acc: ' + str(consonant_val_acc_mean) + '\n')
+
+                f.write('vowel_root loss: ' + str(vowel_epoch_loss_mean) + '\n')
+                f.write('vowel_root acc: ' + str(vowel_epoch_acc_mean) + '\n')
+                f.write('vowel_val_loss: ' + str(vowel_val_loss_mean) + '\n')
+                f.write('vowel_val_acc: ' + str(vowel_val_acc_mean) + '\n')
                 f.write('\n')
             if (epoch+1) % self.save_step == 0:
                 torch.save({
-                    'model_state_dict': self.model.state_dict(),
-                    'optimizer_state_dict': self.optimizer.state_dict(),
+                    'model_root_state_dict': self.model_root.state_dict(),
+                    'model_consonant_state_dict': self.model_consonant.state_dict(),
+                    'model_vowel_state_dict': self.model_vowel.state_dict(),
+                    'optimizer_root_state_dict': self.optimizer_root.state_dict(),
+                    'optimizer_consonant_state_dict': self.optimizer_consonant.state_dict(),
+                    'optimizer_vowel_state_dict': self.optimizer_vowel.state_dict(),
                     'epoch': epoch + 1
                 }, './drive/My Drive/ckpt/%d.pth'%(epoch+1))
         
